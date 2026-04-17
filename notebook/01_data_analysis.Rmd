@@ -1,0 +1,194 @@
+---
+title: "01_data_analysis"
+output: html_document
+author: "Yushin Nam"
+---
+
+## Importing Libraries
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(haven)
+```
+
+## Data
+
+```{r}
+data_sample <- read_dta("../data/cen_ind_2021_pumf_v2_sample.dta")
+
+head(data_sample)
+```
+
+```{r}
+glimpse(data_sample)
+```
+
+## Manipulating Data
+
+
+```{r}
+
+data_sample_clean <- data_sample %>%
+  filter(agegrp %in% c(16, 17)) %>%           # individuals age 60-70
+  filter(!(lfact == 88)) %>%                    #dropping "not available" and "not applicable"
+  filter(!lstwrk %in% c(4, 88)) %>%           # dropping individuals who never worked
+  filter(!immstat %in% c(3, 88)) %>%          # dropping "not available" and "non-permanent residents"
+  filter(!(immstat == 2 & ageimm == 88)) %>%     # dropping "not available"
+  filter(!(immstat == 2 & yrim == 8888)) %>% 
+  filter(marsth != 8) %>%
+  filter(hdgree != 88)
+  
+head(data_sample_clean)
+```
+
+## Creating Variables
+
+### Constructing $Y_i$ - Not in Labour Force (NILF)
+Our outcome variable is binary, $Y_i = 1$ if the individual is not in the labour force, $Y_i = 0$, if the individual is in the labour force.
+An individual is in the labour force if they are either employed or unemployed but actively seeking work. We want: 
+$$NILF_i = \begin{cases}1 & \text{if } LFACT \in \{11, 12, 13, 14\} \\ 0 & \text{otherwise}\end{cases}$$
+
+```{r}
+
+data_sample_clean %>%
+  mutate(NILF = ifelse(lfact %in% c(11,12,13,14), 1, 0)) -> data_sample_clean
+
+data_sample_clean %>% select(NILF)
+```
+
+### Constructing $D_i$ - OAS Eligibility (Treatment)
+
+According to the project outline, we have the following two groups:
+- **Ineligible ($D_i = 0$)**: immigrants who arrived age 60+ and are currently 60+
+- **Eligible ($D_i = 1$)**: immigrants who arrived before age 60, or domestic Canadians (non-immigrants), but currently 60+
+
+This means we need to utilize `IMMSTAT` and `AGEIMM`. 
+
+```{r}
+data_sample_clean %>%
+  mutate(eligible = case_when(
+    immstat == 1 ~ 1,
+    immstat == 2 & ageimm < 13 ~ 1,
+    immstat == 2 & ageimm == 13 ~ 0
+  )) -> data_sample_clean
+
+data_sample_clean %>% select(eligible)
+```
+``` {r}
+table(data_sample_clean$eligible, useNA = "always")
+```
+
+A notable limitation of this analysis is the small size of the ineligible control group. After applying the sample restrictions specified by the project outline - restricting to individuals aged 60-69 and defining ineligibility as having immigrated at age 60 or older - only 24 ineligible individuals remain in the analysis sample. This reflects the inherent rarity of individuals who immigrated to Canada at age 60 or older and are currently within the 60-69 age window in the 2021 Census PUMF sample, and is a data limitation rather than a methodological error. The practical consequence is reduced statistical power, wider confidence intervals, and less precise estimates of the difference in labour force participation rates between the eligible and ineligible groups. A natural extension of this analysis, discussed further in Section 13 of the project outline, would be to replicate the study using the full 2021 Census microdata rather than the PUMF sample, which would provide a substantially larger pool or ineligible control observations and improve the reliability and precision of the comparison between groups.
+
+### Constructing $T_i$ - Time Variable
+Since we want to compare the change in labour force participation across the age 65 threshold between the eligible and ineligible groups, we need to construct a time variable, where it separates "pre-treatment" (age 60- 64) from "post-treatment" (age 65-69), which will be used to find the average treatment effect of the treated with the interaction between `eligible`. 
+
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    above65 = case_when(
+      agegrp == 16 ~ 0,   # 60-64 "pre-treatment"
+      agegrp == 17 ~ 1    # 65-69 "post-treatment"
+    )
+  ) -> data_sample_clean
+
+
+data_sample_clean %>% select(above65)
+```
+
+### Converting Categorical Data into Dummy Variables
+#### Marital Status (`marsth`)
+From the user guide, the codes are:
+- 1. Never married
+- 2. Married
+- 3. Living common law
+- 4. Separated (not living common law)
+- 5. Divorced (not living common law)
+- 6. Widowed (not living common law)
+
+We make each one as a dummy variable, and then drop one of them to avoid dummy variable trap."Never married" will be dropped. 
+
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    married = ifelse(marsth == 2, 1, 0),
+    common_law = ifelse(marsth == 3, 1, 0),
+    separated = ifelse(marsth == 4, 1, 0),
+    divorced = ifelse(marsth == 5, 1, 0),
+    widowed = ifelse(marsth == 6, 1, 0)
+  ) -> data_sample_clean
+
+data_sample_clean %>%
+  select(married, common_law, separated, divorced, widowed)
+
+```
+
+#### Education (`hdgree`)
+For education, they have many categories; therefore, we will group them into broader categories:
+- 1. No degree
+- 2. Highschool
+- 3. Trades
+- 4. College
+- 5. University
+- 6. Postgraduate
+
+"No degree" will be dropped. 
+
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    edu_highschool = ifelse(hdgree == 2, 1, 0),
+    edu_trades = ifelse(hdgree %in% c(3,4), 1, 0),
+    edu_college = ifelse(hdgree %in% c(5,6,7), 1, 0),
+    edu_university = ifelse(hdgree == 8, 1, 0),
+    edu_postgraduate = ifelse(hdgree %in% c(9,10,11,12,13), 1, 0)
+  ) -> data_sample_clean
+
+data_sample_clean %>%
+  select(edu_highschool, edu_trades, edu_college, edu_university, edu_postgraduate)
+
+```
+
+#### Gender (`gender`)
+For gender, although they are already in binary, we want to make it more interpretative. We make male as the base group.
+
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    female = ifelse(Gender == 1, 1, 0)
+  ) -> data_sample_clean
+
+data_sample_clean %>%
+  select(female)
+```
+
+
+## Difference-in-Differences Regression
+
+**The standard DiD regression is:**
+
+$$\begin{aligned}
+Y_i = &\beta_0 + \beta_1 \text{Eligible}_i + \beta_2 \text{Above65}_i + \beta_3 (\text{Eligible}_i \times \text{Above65}_i) \\
+&+ \gamma_1 \text{Female}_i + \gamma_2 \text{TotInc}_i \\
+&+ \gamma_3 \text{Married}_i + \gamma_4 \text{Common_Law}_i + \gamma_5 \text{Separated}_i + \gamma_6 \text{Divorced}_i + \gamma_7 \text{Widowed}_i \\
+&+ \gamma_8 \text{Edu_Highschool}_i + \gamma_9 \text{Edu_Trades}_i + \gamma_{10} \text{Edu_College}_i + \gamma_{11} \text{Edu_University}_i + \gamma_{12} \text{Edu_Postgraduate}_i + \epsilon_i
+\end{aligned}$$
+
+### Why Include These Covariates?
+
+**Gender**
+Men and women have historically different labour force participation patterns, retirement behaviour, and access to private pensions. Women in this age cohort are more likely to have had interrupted work histories, affecting both their CPP entitlements and their retirement timing. Excluding gender would risk conflating OAS effects with gender-driven differences in LFPR.
+
+**Total Income**
+Income captures the individual's financial capacity to retire. Higher income individuals may retire earlier due to greater private savings, while lower income individuals may remain in the labour force longer out of necessity. Since OAS is also income-tested (subject to a recovery tax above ~$90,000), income is directly relevant to the treatment mechanism and must be controlled for.
+
+
+**Marital Status**
+Marital status affects retirement decisions through household income pooling and spousal labour supply. Married individuals may coordinate retirement with their partner, while widowed or divorced individuals may face greater financial pressure to remain employed. Omitting marital status could bias the estimate if it is correlated with both eligibility and LFPR.
+
+**Education**
+Education is a strong predictor of lifetime earnings, occupation type, and access to private pensions. Higher educated individuals tend to have more generous employer pension plans and greater private savings, making them more able to retire at 65. Education is also correlated with immigrant status — recent immigrants may have different educational profiles than domestic Canadians — making it important to control for in a DiD framework comparing these groups.
