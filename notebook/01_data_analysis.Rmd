@@ -30,11 +30,9 @@ glimpse(data_sample)
 
 data_sample_clean <- data_sample %>%
   filter(agegrp %in% c(16, 17)) %>%           # individuals age 60-70
-  filter(!(lfact == 88)) %>%                    #dropping "not available" and "not applicable"
-  filter(!lstwrk %in% c(4, 88)) %>%           # dropping individuals who never worked
+  filter(!lfact %in% c(14, 88)) %>%           # dropping "not available"
   filter(!immstat %in% c(3, 88)) %>%          # dropping "not available" and "non-permanent residents"
-  filter(!(immstat == 2 & ageimm == 88)) %>%     # dropping "not available"
-  filter(!(immstat == 2 & yrim == 8888)) %>% 
+  filter(!(immstat == 2 & yrim == 8888)) %>%  # dropping "not available" for immigrants
   filter(marsth != 8) %>%
   filter(hdgree != 88)
   
@@ -46,12 +44,12 @@ head(data_sample_clean)
 ### Constructing $Y_i$ - Not in Labour Force (NILF)
 Our outcome variable is binary, $Y_i = 1$ if the individual is not in the labour force, $Y_i = 0$, if the individual is in the labour force.
 An individual is in the labour force if they are either employed or unemployed but actively seeking work. We want: 
-$$NILF_i = \begin{cases}1 & \text{if } LFACT \in \{11, 12, 13, 14\} \\ 0 & \text{otherwise}\end{cases}$$
+$$NILF_i = \begin{cases}1 & \text{if } LFACT \in \{11, 12, 13\} \\ 0 & \text{otherwise}\end{cases}$$
 
 ```{r}
 
 data_sample_clean %>%
-  mutate(NILF = ifelse(lfact %in% c(11,12,13,14), 1, 0)) -> data_sample_clean
+  mutate(NILF = ifelse(lfact %in% c(11,12,13), 1, 0)) -> data_sample_clean
 
 data_sample_clean %>% select(NILF)
 ```
@@ -68,8 +66,8 @@ This means we need to utilize `IMMSTAT` and `AGEIMM`.
 data_sample_clean %>%
   mutate(eligible = case_when(
     immstat == 1 ~ 1,
-    immstat == 2 & ageimm < 13 ~ 1,
-    immstat == 2 & ageimm == 13 ~ 0
+    immstat == 2 & yrim <= 2011 ~ 1,
+    immstat == 2 & yrim > 2011 ~ 0
   )) -> data_sample_clean
 
 data_sample_clean %>% select(eligible)
@@ -107,21 +105,18 @@ From the user guide, the codes are:
 - 5. Divorced (not living common law)
 - 6. Widowed (not living common law)
 
-We make each one as a dummy variable, and then drop one of them to avoid dummy variable trap."Never married" will be dropped. 
+We want to group them into never_married, previously_married, and married/common_law, and drop married/common_law:
 
 ```{r}
 
 data_sample_clean %>%
   mutate(
-    married = ifelse(marsth == 2, 1, 0),
-    common_law = ifelse(marsth == 3, 1, 0),
-    separated = ifelse(marsth == 4, 1, 0),
-    divorced = ifelse(marsth == 5, 1, 0),
-    widowed = ifelse(marsth == 6, 1, 0)
+    previously_married = ifelse(marsth %in% c(4,5,6), 1, 0),
+    never_married = ifelse(marsth == 1, 1 , 0)
   ) -> data_sample_clean
 
 data_sample_clean %>%
-  select(married, common_law, separated, divorced, widowed)
+  select(previously_married, never_married)
 
 ```
 
@@ -142,9 +137,9 @@ data_sample_clean %>%
   mutate(
     edu_highschool = ifelse(hdgree == 2, 1, 0),
     edu_trades = ifelse(hdgree %in% c(3,4), 1, 0),
-    edu_college = ifelse(hdgree %in% c(5,6,7), 1, 0),
-    edu_university = ifelse(hdgree == 8, 1, 0),
-    edu_postgraduate = ifelse(hdgree %in% c(9,10,11,12,13), 1, 0)
+    edu_college = ifelse(hdgree %in% c(5,6,7,8), 1, 0),
+    edu_university = ifelse(hdgree == 9, 1, 0),
+    edu_postgraduate = ifelse(hdgree %in% c(10,11,12,13), 1, 0)
   ) -> data_sample_clean
 
 data_sample_clean %>%
@@ -166,6 +161,30 @@ data_sample_clean %>%
   select(female)
 ```
 
+#### Province of Residence (`PR`)
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    bc = ifelse(pr == 59, 1, 0),
+    prairies = ifelse(pr %in% c(46,47,48), 1, 0),
+    ontario = ifelse(pr == 35, 1, 0),
+    quebec = ifelse(pr == 24, 1, 0),
+    territories = ifelse(pr %in% c(60, 61, 62), 1, 0)
+    # atlantic = ifelse(pr %in% c(10, 11, 12, 13), 1, 0)
+    ) -> data_sample_clean
+
+```
+
+#### Housing Tenure (`Tenur`)
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    owner = ifelse(tenur == 1, 1, 0)
+  ) -> data_sample_clean
+
+```
 
 ## Difference-in-Differences Regression
 
@@ -192,3 +211,16 @@ Marital status affects retirement decisions through household income pooling and
 
 **Education**
 Education is a strong predictor of lifetime earnings, occupation type, and access to private pensions. Higher educated individuals tend to have more generous employer pension plans and greater private savings, making them more able to retire at 65. Education is also correlated with immigrant status — recent immigrants may have different educational profiles than domestic Canadians — making it important to control for in a DiD framework comparing these groups.
+
+**Province of Residence**
+Labour market conditions, retirement norms, and economic opportunities vary significantly across Canadian provinces. Provinces differ in their unemployment rates, average wages, cost of living, and availability of jobs for older workers. Additionally, Quebec has its own pension plan (QPP) which operates separately from CPP, meaning retirement incentives are not uniform across provinces. Failing to control for province of residence could bias the DiD estimate if the geographic distribution of eligible and ineligible individuals is uneven across provinces, which is plausible given that recent immigrants tend to concentrate in specific provinces such as Ontario and British Columbia.
+
+**Market Income**
+Market income — which captures earned income from employment and self-employment excluding government transfers — proxies for an individual's financial capacity and attachment to the labour market independent of retirement benefits. Individuals with higher market income have greater private savings and are more likely to have access to employer pension plans, giving them greater capacity to retire at 65. Unlike total income, market income excludes OAS and CPP payments, making it a cleaner pre-treatment measure of financial resources that avoids the bad control problem associated with TotInc.
+
+**Household Size**
+Household size captures the financial obligations and shared income arrangements of an individual. Individuals in larger households may face greater financial pressure to remain in the labour force to support dependents, while those in smaller households — particularly those living alone — may have more flexibility to retire. Household size is also correlated with marital status and family structure, adding an additional dimension of household-level retirement incentives not fully captured by marital status dummies alone.
+
+**Housing Tenure**
+Whether an individual owns or rents their home is a strong proxy for accumulated wealth and financial security. Homeowners have typically accumulated significant housing equity by ages 60–69, providing a financial cushion that supports earlier retirement. Renters, by contrast, face ongoing housing costs that create stronger financial incentives to remain employed. Housing tenure is also likely to be correlated with immigrant status — recent immigrants are less likely to own homes, which could independently affect their labour force participation decisions in ways unrelated to OAS eligibility.
+
