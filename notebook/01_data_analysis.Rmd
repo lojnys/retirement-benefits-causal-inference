@@ -1,0 +1,329 @@
+---
+title: "01_data_analysis"
+output: html_document
+author: "Yushin Nam"
+---
+
+## Importing Libraries
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(haven)
+library(stargazer)
+```
+
+## Data
+
+```{r}
+data_sample <- read_dta("../data/cen_ind_2021_pumf_v2_sample.dta")
+
+head(data_sample)
+```
+
+```{r}
+glimpse(data_sample)
+```
+
+## Manipulating Data
+
+
+```{r}
+
+data_sample_clean %>%
+  filter(agegrp %in% c(16, 17),#ages from 60 to 69 years old
+         !(lfact %in% c(14,15,16)), # removing NAs
+         immstat != 4,
+         !(immstat == 2 & ageimm == 88),
+         hdgree != 88,
+         marsth != 8,
+         tenur != 8,
+         !(MrkInc %in% c(88888888, 99999999)),
+         hhsize != 8
+         ) %>% 
+  mutate(above65 = ifelse(agegrp == 17, 1, 0), # creating over65 indicator
+         NILF = ifelse(lfact >= 11, 1, 0),
+         eligible = case_when(
+           immstat == 1 ~ 1, #non-immigrants are always eligible
+           immstat == 2 & ageimm %in% 1:9 ~ 1, # immigrants here for some time are eligible, switched from 1:9
+           immstat == 2 & ageimm %in% 10:13 ~ 0 # switched from 10:13
+         )) -> data_sample_clean
+```
+
+## Creating Variables
+
+### Constructing $Y_i$ - Not in Labour Force (NILF)
+Our outcome variable is binary, $Y_i = 1$ if the individual is not in the labour force, $Y_i = 0$, if the individual is in the labour force.
+An individual is in the labour force if they are either employed or unemployed but actively seeking work. We want: 
+$$NILF_i = \begin{cases}1 & \text{if } LFACT \in \{11, 12, 13\} \\ 0 & \text{otherwise}\end{cases}$$
+
+```{r}
+
+data_sample_clean %>%
+  mutate(NILF = ifelse(lfact %in% c(11,12,13), 1, 0)) -> data_sample_clean
+
+data_sample_clean %>% select(NILF)
+```
+
+### Constructing $D_i$ - OAS Eligibility (Treatment)
+
+According to the project outline, we have the following two groups:
+- **Ineligible ($D_i = 0$)**: immigrants who arrived age 60+ and are currently 60+
+- **Eligible ($D_i = 1$)**: immigrants who arrived before age 60, or domestic Canadians (non-immigrants), but currently 60+
+
+This means we need to utilize `IMMSTAT` and `AGEIMM`. 
+
+```{r}
+data_sample_clean %>%
+  mutate(eligible = case_when(
+    immstat == 1 ~ 1,
+    immstat == 2 & yrim <= 2011 ~ 1,
+    immstat == 2 & yrim > 2011 ~ 0
+  )) -> data_sample_clean
+
+data_sample_clean %>% select(eligible)
+```
+``` {r}
+table(data_sample_clean$eligible, useNA = "always")
+```
+
+A notable limitation of this analysis is the small size of the ineligible control group. After applying the sample restrictions specified by the project outline - restricting to individuals aged 60-69 and defining ineligibility as having immigrated at age 60 or older - only 24 ineligible individuals remain in the analysis sample. This reflects the inherent rarity of individuals who immigrated to Canada at age 60 or older and are currently within the 60-69 age window in the 2021 Census PUMF sample, and is a data limitation rather than a methodological error. The practical consequence is reduced statistical power, wider confidence intervals, and less precise estimates of the difference in labour force participation rates between the eligible and ineligible groups. A natural extension of this analysis, discussed further in Section 13 of the project outline, would be to replicate the study using the full 2021 Census microdata rather than the PUMF sample, which would provide a substantially larger pool or ineligible control observations and improve the reliability and precision of the comparison between groups.
+
+### Constructing $T_i$ - Time Variable
+Since we want to compare the change in labour force participation across the age 65 threshold between the eligible and ineligible groups, we need to construct a time variable, where it separates "pre-treatment" (age 60- 64) from "post-treatment" (age 65-69), which will be used to find the average treatment effect of the treated with the interaction between `eligible`. 
+
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    above65 = case_when(
+      agegrp == 16 ~ 0,   # 60-64 "pre-treatment"
+      agegrp == 17 ~ 1    # 65-69 "post-treatment"
+    )
+  ) -> data_sample_clean
+
+
+data_sample_clean %>% select(above65)
+```
+
+### Converting Categorical Data into Dummy Variables
+#### Marital Status (`marsth`)
+From the user guide, the codes are:
+- 1. Never married
+- 2. Married
+- 3. Living common law
+- 4. Separated (not living common law)
+- 5. Divorced (not living common law)
+- 6. Widowed (not living common law)
+
+We want to group them into never_married, previously_married, and married/common_law, and drop married/common_law:
+
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    previously_married = ifelse(marsth %in% c(4,5,6), 1, 0),
+    never_married = ifelse(marsth == 1, 1 , 0)
+  ) -> data_sample_clean
+
+data_sample_clean %>%
+  select(previously_married, never_married)
+
+```
+
+#### Education (`hdgree`)
+For education, they have many categories; therefore, we will group them into broader categories:
+- 1. No degree
+- 2. Highschool
+- 3. Trades
+- 4. College
+- 5. University
+- 6. Postgraduate
+
+"No degree" will be dropped. 
+
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    edu_highschool = ifelse(hdgree == 2, 1, 0),
+    edu_trades = ifelse(hdgree %in% c(3,4), 1, 0),
+    edu_college = ifelse(hdgree %in% c(5,6,7,8), 1, 0),
+    edu_university = ifelse(hdgree == 9, 1, 0),
+    edu_postgraduate = ifelse(hdgree %in% c(10,11,12,13), 1, 0)
+  ) -> data_sample_clean
+
+data_sample_clean %>%
+  select(edu_highschool, edu_trades, edu_college, edu_university, edu_postgraduate)
+
+```
+
+#### Gender (`gender`)
+For gender, although they are already in binary, we want to make it more interpretative. We make male as the base group.
+
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    female = ifelse(Gender == 1, 1, 0)
+  ) -> data_sample_clean
+
+data_sample_clean %>%
+  select(female)
+```
+
+#### Province of Residence (`PR`)
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    bc = ifelse(pr == 59, 1, 0),
+    prairies = ifelse(pr %in% c(46,47,48), 1, 0),
+    ontario = ifelse(pr == 35, 1, 0),
+    quebec = ifelse(pr == 24, 1, 0),
+    territories = ifelse(pr == 70, 1, 0)
+    # atlantic = ifelse(pr %in% c(10, 11, 12, 13), 1, 0)
+    ) -> data_sample_clean
+
+data_sample_clean %>%
+  select(bc, prairies, ontario, quebec, territories)
+```
+
+#### Housing Tenure (`Tenur`)
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    owner = ifelse(tenur == 1, 1, 0)
+  ) -> data_sample_clean
+
+data_sample_clean %>%
+  select(owner)
+```
+
+#### Market Income (`MrkInc`)
+
+```{r}
+
+data_sample_clean %>%
+  mutate(
+    MrkInc_10k = MrkInc / 10000
+  ) -> data_sample_clean
+
+data_sample_clean %>%
+  select(MrkInc_10k)
+
+```
+
+## Difference-in-Differences Regression
+
+**Baseline DiD regression**
+
+$$
+\begin{aligned}
+Y_i = &\beta_0 + \beta_1 \text{Eligible}_i + \beta_2 \text{Above65}_i + \beta_3 (\text{Eligible}_i \times \text{Above65}_i) + \epsilon_i
+\end{aligned}
+$$
+
+**The standard DiD regression**
+
+$$
+\begin{aligned}
+Y_i = &\beta_0 + \beta_1 \text{Eligible}_i + \beta_2 \text{Above65}_i + \beta_3 (\text{Eligible}_i \times \text{Above65}_i) \\
+&+ \gamma_1 \text{Female}_i + \gamma_2 \text{MrkInc}_i \\
+&+ \gamma_3 \text{NeverMarried}_i + \gamma_4 \text{PreviouslyMarried}_i \\
+&+ \gamma_5 \text{EduHighschool}_i + \gamma_6 \text{EduTrades}_i + \gamma_7 \text{EduCollege}_i + \gamma_{8} \text{EduUniversity}_i \\ &+ \gamma_{9} \text{EduPostgraduate}_i + \gamma_{10} \text{BC}_i + \gamma_{11} \text{Prairies}_i + \gamma_{12} \text{Ontario}_i + \gamma_{13} \text{Quebec}_i \\ 
+&+ \gamma_{14} \text{Territories}_i + \gamma_{15} \text{HHSize}_i + \gamma_{16} \text{Owner}_i + \epsilon_i
+\end{aligned}
+$$
+
+### Why Include These Covariates?
+
+**Gender**
+Men and women have historically different labour force participation patterns, retirement behaviour, and access to private pensions. Women in this age cohort are more likely to have had interrupted work histories, affecting both their CPP entitlements and their retirement timing. Excluding gender would risk conflating OAS effects with gender-driven differences in LFPR.
+
+**Total Income**
+Income captures the individual's financial capacity to retire. Higher income individuals may retire earlier due to greater private savings, while lower income individuals may remain in the labour force longer out of necessity. Since OAS is also income-tested (subject to a recovery tax above ~$90,000), income is directly relevant to the treatment mechanism and must be controlled for.
+
+
+**Marital Status**
+Marital status affects retirement decisions through household income pooling and spousal labour supply. Married individuals may coordinate retirement with their partner, while widowed or divorced individuals may face greater financial pressure to remain employed. Omitting marital status could bias the estimate if it is correlated with both eligibility and LFPR.
+
+**Education**
+Education is a strong predictor of lifetime earnings, occupation type, and access to private pensions. Higher educated individuals tend to have more generous employer pension plans and greater private savings, making them more able to retire at 65. Education is also correlated with immigrant status — recent immigrants may have different educational profiles than domestic Canadians — making it important to control for in a DiD framework comparing these groups.
+
+**Province of Residence**
+Labour market conditions, retirement norms, and economic opportunities vary significantly across Canadian provinces. Provinces differ in their unemployment rates, average wages, cost of living, and availability of jobs for older workers. Additionally, Quebec has its own pension plan (QPP) which operates separately from CPP, meaning retirement incentives are not uniform across provinces. Failing to control for province of residence could bias the DiD estimate if the geographic distribution of eligible and ineligible individuals is uneven across provinces, which is plausible given that recent immigrants tend to concentrate in specific provinces such as Ontario and British Columbia.
+
+**Market Income**
+Market income — which captures earned income from employment and self-employment excluding government transfers — proxies for an individual's financial capacity and attachment to the labour market independent of retirement benefits. Individuals with higher market income have greater private savings and are more likely to have access to employer pension plans, giving them greater capacity to retire at 65. Unlike total income, market income excludes OAS and CPP payments, making it a cleaner pre-treatment measure of financial resources that avoids the bad control problem associated with TotInc.
+
+**Household Size**
+Household size captures the financial obligations and shared income arrangements of an individual. Individuals in larger households may face greater financial pressure to remain in the labour force to support dependents, while those in smaller households — particularly those living alone — may have more flexibility to retire. Household size is also correlated with marital status and family structure, adding an additional dimension of household-level retirement incentives not fully captured by marital status dummies alone.
+
+**Housing Tenure**
+Whether an individual owns or rents their home is a strong proxy for accumulated wealth and financial security. Homeowners have typically accumulated significant housing equity by ages 60–69, providing a financial cushion that supports earlier retirement. Renters, by contrast, face ongoing housing costs that create stronger financial incentives to remain employed. Housing tenure is also likely to be correlated with immigrant status — recent immigrants are less likely to own homes, which could independently affect their labour force participation decisions in ways unrelated to OAS eligibility.
+
+```{r}
+
+did_model_base <- lm(
+  NILF ~ eligible + above65 + eligible:above65,
+  data = data_sample_clean
+)
+
+# did_model_manual <- lm(
+#   NILF ~ eligible + above65 + eligible:above65 +
+#     female +
+#     MrkInc_10k +
+#     never_married + previously_married +
+#     edu_highschool + edu_trades + edu_college +
+#     edu_university + edu_postgraduate +
+#     bc + prairies + ontario + quebec + territories +
+#     hhsize +
+#     owner,
+#   data = data_sample_clean
+# )
+
+did_model_full <- lm(
+  NILF ~ eligible + above65 + eligible:above65 + Gender + tenur + MrkInc_10k + hhsize + pr + marsth + hdgree, data = data_sample_clean
+)
+
+did_model_full_factor <- lm(
+  NILF ~ eligible + above65 + eligible:above65 + factor(Gender) + factor(tenur) + MrkInc_10k + hhsize + factor(pr) + factor(marsth) + factor(hdgree), data = data_sample_clean
+)
+
+did_model_adjusted <- lm(
+  NILF ~ eligible + above65 + eligible:above65 + factor(Gender) + factor(tenur) + MrkInc_10k + hhsize + factor(pr) + factor(marsth), data = data_sample_clean
+)
+
+summary(did_model_base)
+# summary(did_model_manual)
+summary(did_model_full)
+summary(did_model_full_factor)
+summary(did_model_adjusted)
+```
+
+We need both the baseline model and the full model in order to see isolate the raw DiD effect, robustness check through comparison, and transparency and credibility. 
+
+```{r}
+stargazer(did_model_base, did_model_full, did_model_adjusted,
+          type = "text",
+          title = "DiD Regression Results",
+          dep.var.labels = "Not in Labour Force (NILF)",
+          keep.stat = c("n", "rsq"))
+
+```
+```{r}
+stargazer(
+  did_model_base, did_model_full, did_model_adjusted,
+  type = "text",
+  title = "Cross-sectional DD-style models",
+  dep.var.labels = "Not in labour force (NILF)",
+  column.labels = c("Baseline", "Controls (raw)", "Controls (factors)"),
+  digits = 3,
+  omit.stat = c("f", "ser")
+)
+
+```
+
+
+The full model includes gender, housing tenure, market income, household size, province of residence, and marital status as covariates, each selected on theoretical grounds rooted in the labour-leisure model. Gender is included because men and women exhibit systematically different labour force participation patterns and retirement behaviour, particularly among the cohort aged 60–69. Housing tenure proxies for accumulated wealth — homeowners have greater financial security and are therefore more able to retire independently of OAS eligibility. Market income captures an individual's financial capacity and labour market attachment, with higher earners more likely to have access to private pensions and employer retirement plans. Household size controls for financial obligations, as individuals in larger households face greater pressure to remain employed. Province of residence accounts for regional variation in labour market conditions, retirement norms, and pension generosity — notably, Quebec operates its own pension plan (QPP) separately from CPP, introducing heterogeneity in retirement incentives across provinces. Marital status is included because partnered individuals can coordinate retirement decisions and pool household income, while previously married or never married individuals may face different financial pressures affecting their retirement timing. Omitting any of these variables would risk omitted variable bias (OVB) in the DiD estimator if they are correlated with both OAS eligibility and labour force participation. Importantly, although household size, province of residence, and marital status are individually statistically insignificant in the full model, removing them increases the p-value of the DiD estimator $\beta_3$, suggesting they absorb confounding variation relevant to identifying the treatment effect. They are therefore retained in the full specification on both theoretical and empirical grounds, consistent with the principle that covariate inclusion should be guided by theoretical justification rather than individual statistical significance alone.
