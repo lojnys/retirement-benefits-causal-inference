@@ -48,8 +48,8 @@ This project uses the **2021 Canadian Census Public Use Microdata File (PUMF) - 
 Across all specifications, OAS elgibility is associated with a roughly 12.5 percentage point *decrease* in the probability of being out of the labour force - contrary to the simple labour-leisure prediction. See the report for full discussion of limitations and the case for an RDD extension.
 
 ## Requirements
-- R ()
-- Packages: 
+- R (Version 4.5.2)
+- Packages: tidyverse, ggplot2, haven, stargazer
 
 ## Acknowledgements
 
